@@ -1,3 +1,357 @@
 AWSTemplateFormatVersion: '2010-09-09'
-Transform: 'AWS::Serverless-2016-10-31'
-Resources: {}
+Description: |
+  Service Catalog Product/ CloudFormation Template used to Vend and Provision a new AWS Account within the RWE-Multi Account Platform.
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label:
+          default: Account Details
+        Parameters:
+          - AccountName
+          - AccountGroup
+          - AccountType
+          - IamUserAccessToBilling
+      - Label:
+          default: Account Tags
+        Parameters:
+          - TeamName
+          - OperatingCompany
+          - Environment
+      - Label:
+          default: Account Permissions
+        Parameters:
+          - AdGroup
+      - Label:
+          default: Networking
+        Parameters:
+          - RoutingDomain
+          - VpcSize
+          - VPCDomainName
+          - AppDefaultRoute
+      - Label:
+          default: Account Mappings
+        Parameters:
+          - RelatedCICDAccountId
+          - RelatedCICDVpcName
+          - RelatedApplicationAccountIds
+Parameters:
+  AccountName:
+    Type: String
+    Description: The name to use for the account that is to be created
+  IamUserAccessToBilling:
+    Type: String
+    Default: ALLOW
+    AllowedValues:
+      - ALLOW
+      - DENY
+  AccountGroup:
+    Type: String
+    Description: Which platform does the account belong to
+    AllowedValues:
+      - Core
+      - RWEST
+      - Generation
+      - Renewables
+      - Exceptions
+      - Parking-Lot
+      - Sand-pit
+  AccountType:
+    Type: String
+    Description: Which stage of the SDLC is the account going to be used for
+    AllowedValues:
+      - Core
+      - Non-prod
+      - Prod
+      - CICD
+      - Parking-lot
+  VpcSize:
+    Type: String
+    Description: |
+      Very Large /21 = 2048 IPsv \n
+      Large /22 = 1024 IPs \n
+      Medium /23 = 512 IPs \n
+      Small /24 = 256 IPs \n
+      CICD /25 = 128 IPs
+    AllowedValues:
+      - Small
+      - Medium
+      - Large
+      - VeryLarge
+      - CICD
+  RoutingDomain:
+    Type: String
+    Description: The routing domain for the vpc
+    AllowedValues:
+      - wan
+      - prod
+      - internet-only
+      - nonprod
+      - sharedservices
+      - cicd
+  VPCDomainName:
+    Type: String
+    Description: the domain name for the vpc ie vpc.internal
+    Default: energy.local
+  AppDefaultRoute:
+    Type: String
+    Description: 'add default route (0.0.0.0/0) with App route table '
+    AllowedValues:
+      - 'Yes'
+      - 'No'
+  AdGroup:
+    Type: String
+    Description: 'the cloud AD Group, starts with FNC3_AWS_'
+    Default: FNC3_AWS_
+  TeamName:
+    Type: String
+    Description: the name of the application team (For Tagging)
+  OperatingCompany:
+    Type: String
+    Description: the numeric value for the company group (ie RWEST = 0600)(For Tagging)
+    Default: '0600'
+  Environment:
+    Type: String
+    Description: the environment tag value (For Tagging)
+    AllowedValues:
+      - Prod
+      - Stage
+      - Test
+      - Dev
+      - CICD
+      - NonProd
+  RelatedCICDAccountId:
+    Type: String
+    Description: The ID of the related CICD account. For Network Peering. Leave Blank if needed.
+    Default: ''
+  RelatedCICDVpcName:
+    Type: String
+    Description: 'The name of the CICD account''s VPC. If more than 1 vpc present, specify the name for the main vpc. Leave Blank if needed.'
+    Default: ''
+  RelatedApplicationAccountIds:
+    Type: String
+    Description: The IDs of related non prod and prod accounts for CICD Roles. Comma Delimiter Required.
+    Default: ''
+Conditions:
+  NotCICD: !Not
+    - !Equals
+      - !Ref AccountType
+      - CICD
+  NotCore: !Not
+    - !Equals
+      - !Ref AccountType
+      - Core
+  NotParkingLot: !Not
+    - !Equals
+      - !Ref AccountType
+      - Parking-lot
+  NonProdAndProd: !And
+    - Condition: NotCICD
+    - Condition: NotCore
+    - Condition: NotParkingLot
+    - Condition: RelatedCICD
+  IsCICD: !Equals
+    - !Ref AccountType
+    - CICD
+  GroupNotEmpty: !Not
+    - !Equals
+      - !Ref RelatedApplicationAccountIds
+      - ''
+  RelatedCICD: !Not
+    - !Equals
+      - !Ref RelatedCICDAccountId
+      - ''
+  CICDGroup: !And
+    - Condition: GroupNotEmpty
+    - Condition: IsCICD
+Resources:
+  CheckAD:
+    Type: Custom::Resource
+    DeletionPolicy: Retain
+    Properties:
+      ServiceToken: arn:aws:lambda:eu-central-1:996547918887:function:AD_Group_Query_Function
+      ADGroup: !Ref AdGroup
+  VendCIDR:
+    Type: Custom::CustomResource
+    DeletionPolicy: Retain
+    DependsOn: CheckAD
+    Description: Vends a fresh CIDR range for the VPC creation.
+    Properties:
+      ServiceToken: arn:aws:lambda:eu-central-1:996547918887:function:SC-996547918887-pp-f7acxux3b4wtk-APIVPCFunction-QKJAPUBA47BA
+      environment: !Ref Environment
+      networkview: Default
+      netsize: !Ref VpcSize
+      accountnumber: !GetAtt Account.account_id
+  OUDetails:
+    Type: Custom::Resource
+    DeletionPolicy: Retain
+    DependsOn: CheckAD
+    Properties:
+      ServiceToken: arn:aws:lambda:eu-central-1:996547918887:function:account-type-to-organizational-unit-id
+      AccountType: !Ref AccountType
+      AccountGroup: !Ref AccountGroup
+  EmailVend:
+    Type: Custom::CustomResource
+    DeletionPolicy: Retain
+    DependsOn: CheckAD
+    Description: Return an email for the new account
+    Properties:
+      ServiceToken: arn:aws:lambda:eu-central-1:996547918887:function:SC-996547918887-pp-7exepxbj36-EmailVendingFunction-3A22ZLPLVC12
+      low_range: 37
+      high_range: 200
+  Account:
+    Type: Custom::CustomResource
+    Description: A custom resource representing an AWS Account
+    DeletionPolicy: Retain
+    Properties:
+      ServiceToken: arn:aws:lambda:eu-central-1:996547918887:function:SC-996547918887-pp-h6sfoku2b-AccountCustomResource-18HLBDO48NDYI
+      Email: !GetAtt EmailVend.Email
+      AccountName: !Ref AccountName
+      IamUserAccessToBilling: !Ref IamUserAccessToBilling
+      TargetOU: !GetAtt OUDetails.OrganizationalUnitName
+  VpcNameParam:
+    Type: AWS::SSM::Parameter
+    DeletionPolicy: Retain
+    Properties:
+      Description: The name for the spoke vpc in the new account.
+      Name: !Sub /governance-at-scale-account-factory/networking-parameters/${Account.account_id}/vpc_name
+      Type: String
+      Value: !Join
+        - '-'
+        - - !Ref AccountName
+          - !Ref Environment
+          - VPC
+  VpcSizeParam:
+    Type: AWS::SSM::Parameter
+    DeletionPolicy: Retain
+    Properties:
+      Description: the size of the spoke vpc in the new account.
+      Name: !Sub /governance-at-scale-account-factory/networking-parameters/${Account.account_id}/vpc_size
+      Type: String
+      Value: !Ref VpcSize
+  VpcRoutingDomainParam:
+    Type: AWS::SSM::Parameter
+    DeletionPolicy: Retain
+    Properties:
+      Description: the routing domain of the spoke vpc in the new account.
+      Name: !Sub /governance-at-scale-account-factory/networking-parameters/${Account.account_id}/routing_domain
+      Type: String
+      Value: !Ref RoutingDomain
+  VpcCIDRParam:
+    Type: AWS::SSM::Parameter
+    DeletionPolicy: Retain
+    Properties:
+      Description: the cidr block of the spoke vpc in the new account.
+      Name: !Sub /governance-at-scale-account-factory/networking-parameters/${Account.account_id}/cidr
+      Type: String
+      Value: !Ref VendCIDR
+  VpcDomainNameParam:
+    Type: AWS::SSM::Parameter
+    DeletionPolicy: Retain
+    Properties:
+      Description: the domain name of the spoke vpc in the new account.
+      Name: !Sub /governance-at-scale-account-factory/networking-parameters/${Account.account_id}/vpc_domain_name
+      Type: String
+      Value: !Ref VPCDomainName
+  VpcAppDefaultRouteParam:
+    Type: AWS::SSM::Parameter
+    DeletionPolicy: Retain
+    Properties:
+      Description: the default route of the spoke vpc in the new account.
+      Name: !Sub /governance-at-scale-account-factory/networking-parameters/${Account.account_id}/app_default_route
+      Type: String
+      Value: !Ref AppDefaultRoute
+  CICDIdParam:
+    Type: AWS::SSM::Parameter
+    DeletionPolicy: Retain
+    Condition: NonProdAndProd
+    Properties:
+      Description: The related cicd account's Id
+      Name: !Sub /sc-admin-product/foundation-networking/${Account.account_id}/RelatedCICDAccount
+      Type: String
+      Value: !Ref RelatedCICDAccountId
+  CICDVpcNameParam:
+    Type: AWS::SSM::Parameter
+    DeletionPolicy: Retain
+    Condition: NonProdAndProd
+    Properties:
+      Description: The related cicd account's main vpc name. for peering
+      Name: !Sub /sc-admin-product/foundation-networking/${Account.account_id}/RelatedCICDVpcName
+      Type: String
+      Value: !Ref RelatedCICDVpcName
+  CICDGroupParam:
+    Type: AWS::SSM::Parameter
+    DeletionPolicy: Retain
+    Condition: CICDGroup
+    Properties:
+      Description: The related non prod and prod account IDs.
+      Name: !Sub /sc-admin-product/foundation-networking/${Account.account_id}/RelatedApplicationAccountIds
+      Type: String
+      Value: !Ref RelatedApplicationAccountIds
+  LinkSSO:
+    Type: Custom::Resource
+    DeletionPolicy: Retain
+    Properties:
+      ServiceToken: arn:aws:lambda:eu-central-1:996547918887:function:LinkSSO_AVM_Function
+      ADGroup: !Ref AdGroup
+      AccountID: !GetAtt Account.account_id
+      AccountType: !Ref AccountType
+  Notifier:
+    Type: Custom::Resource
+    DeletionPolicy: Retain
+    Properties:
+      ServiceToken: arn:aws:lambda:eu-central-1:996547918887:function:account-creation-notifier
+      AccountName: !Ref AccountName
+      AccountEmail: !GetAtt EmailVend.Email
+      ManagedOrganizationalUnit: !GetAtt OUDetails.OrganizationalUnitName
+      AccountId: !GetAtt Account.account_id
+  EnterpriseSupport:
+    Type: Custom::CustomResource
+    DeletionPolicy: Retain
+    Properties:
+      ServiceToken: arn:aws:lambda:eu-central-1:996547918887:function:Enterprise-Support-Case
+      AccountId: !GetAtt Account.account_id
+  TagAccount:
+    Type: Custom::CustomResource
+    DeletionPolicy: Retain
+    Properties:
+      ServiceToken: arn:aws:lambda:eu-central-1:996547918887:Tag_New_Account_Function
+      team_name: !Ref TeamName
+      operating_company: !Ref OperatingCompany
+      environment: !Ref Environment
+      account_id: !GetAtt Account.account_id
+      account_name: !Ref AccountName
+  AccountBootstrapConditionHandle1:
+    Type: AWS::CloudFormation::WaitConditionHandle
+    DeletionPolicy: Retain
+    Properties: {}
+  Bootstrap:
+    Type: Custom::CustomResource
+    DependsOn: Notifier
+    DeletionPolicy: Retain
+    Properties:
+      ServiceToken: arn:aws:lambda:eu-central-1:996547918887:function:SC-996547918887-pp-bywsun-BootstrapperProjectCusto-V69YIV0G83QV
+      OrganizationAccountAccessRoleName: OrganizationAccountAccessRole
+      TargetAccountId: !GetAtt Account.account_id
+      PuppetAccountId: !Sub ${AWS::AccountId}
+      Handle: !Ref AccountBootstrapConditionHandle1
+  AccountBootstrapCondition1:
+    Type: AWS::CloudFormation::WaitCondition
+    DependsOn: Bootstrap
+    DeletionPolicy: Retain
+    Properties:
+      Handle: !Ref AccountBootstrapConditionHandle1
+      Timeout: '28800'
+Outputs:
+  AccountId:
+    Description: The Account ID of the newly vended account.
+    Value: !GetAtt Account.account_id
+  CidrBlock:
+    Description: The Cidr block for the account's VPC.
+    Value: !Ref VendCIDR
+  VpcName:
+    Description: The name of the account's main VPC.
+    Value: !Join
+      - '-'
+      - - !Ref AccountName
+        - !Ref Environment
+        - VPC
